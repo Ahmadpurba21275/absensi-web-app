@@ -51,7 +51,9 @@ init_db()
 
 # --- FUNGSI UTAMA ABSENSI ---
 def proses_absensi(id_anggota, nama, status="Hadir"):
-    sekarang = datetime.now()
+ # KODE BARU (Mengunci ke Waktu Indonesia Barat / WIB):
+    waktu_wib = pytz.timezone('Asia/Jakarta')
+    sekarang = datetime.now(waktu_wib)
     tanggal = sekarang.strftime("%Y-%m-%d")
     waktu_sekarang = sekarang.strftime("%H:%M:%S")
 
