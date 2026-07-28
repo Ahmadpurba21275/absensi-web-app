@@ -1,14 +1,8 @@
 import csv
+import io
 import sqlite3
 from datetime import datetime
-import pytz  # <--- Tambahkan baris ini
-import cv2
-import numpy as np
-import pandas as pd
-import streamlit as st
-import csv
-import sqlite3
-from datetime import datetime
+import pytz
 import cv2
 import numpy as np
 import pandas as pd
@@ -16,195 +10,160 @@ import streamlit as st
 
 # --- KONFIGURASI HALAMAN ---
 st.set_page_config(
-    page_title="Sistem Absensi Web",
+    page_title="Sistem Absensi Web Multi-Guru",
     page_icon="📋",
     layout="wide"
 )
 
+# Zona Waktu Indonesia Barat (WIB)
+WIB = pytz.timezone('Asia/Jakarta')
+
 # --- SETUP DATABASE ---
 def init_db():
-    conn = sqlite3.connect("absensi.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS absensi (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nama TEXT NOT NULL,
-            id_anggota TEXT NOT NULL,
-            tanggal TEXT NOT NULL,
-            jam_masuk TEXT NOT NULL,
-            jam_keluar TEXT,
-            status TEXT NOT NULL
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS admin (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL
-        )
-    """)
-    cursor.execute("INSERT OR IGNORE INTO admin (id, username, password) VALUES (1, 'admin', 'admin123')")
-    conn.commit()
-    conn.close()
+    with sqlite3.connect("absensi.db") as conn:
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS absensi (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nama_guru TEXT,
+                nama_kelas TEXT,
+                nis_nip TEXT,
+                nama TEXT,
+                tanggal TEXT,
+                jam TEXT
+            )
+        ''')
+        conn.commit()
 
 init_db()
 
-# --- FUNGSI UTAMA ABSENSI ---
-def proses_absensi(id_anggota, nama, status="Hadir"):
- # KODE BARU (Mengunci ke Waktu Indonesia Barat / WIB):
-    waktu_wib = pytz.timezone('Asia/Jakarta')
-    sekarang = datetime.now(waktu_wib)
-    tanggal = sekarang.strftime("%Y-%m-%d")
-    waktu_sekarang = sekarang.strftime("%H:%M:%S")
+# --- FUNGSI ABSENSI ---
+def proses_absensi(data_qr, nama_guru, nama_kelas):
+    sekarang = datetime.now(WIB)
+    tanggal_str = sekarang.strftime("%Y-%m-%d")
+    jam_str = sekarang.strftime("%H:%M:%S")
 
-    conn = sqlite3.connect("absensi.db")
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT id, jam_keluar FROM absensi WHERE id_anggota = ? AND tanggal = ?", (id_anggota, tanggal))
-    data_hari_ini = cursor.fetchone()
-
-    if data_hari_ini:
-        record_id, jam_keluar = data_hari_ini
-        cursor.execute("UPDATE absensi SET jam_keluar = ?, status = ? WHERE id = ?", (waktu_sekarang, status, record_id))
-        conn.commit()
-        pesan = f"✅ Absen PULANG untuk {nama} ({id_anggota}) berhasil dicatat ({waktu_sekarang})!"
+    # Format QR Code: NIS_NIP,Nama (Contoh: 12345,Ahmad Purba)
+    if "," in data_qr:
+        nis_nip, nama = data_qr.split(",", 1)
+        nis_nip = nis_nip.strip()
+        nama = nama.strip()
     else:
-        cursor.execute("""
-            INSERT INTO absensi (nama, id_anggota, tanggal, jam_masuk, jam_keluar, status)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (nama, id_anggota, tanggal, waktu_sekarang, "-", status))
-        conn.commit()
-        pesan = f"✅ Absen MASUK untuk {nama} ({id_anggota}) berhasil dicatat ({waktu_sekarang})!"
+        nis_nip = "N/A"
+        nama = data_qr.strip()
 
-    conn.close()
-    return pesan
+    with sqlite3.connect("absensi.db") as conn:
+        c = conn.cursor()
+        # Cek duplikasi absensi hari ini untuk guru & kelas yang sama
+        c.execute('''
+            SELECT * FROM absensi 
+            WHERE nis_nip = ? AND tanggal = ? AND nama_guru = ? AND nama_kelas = ?
+        ''', (nis_nip, tanggal_str, nama_guru, nama_kelas))
+        
+        existing = c.fetchone()
 
-# --- SIDEBAR (NAVIGASI & LOGIN) ---
-st.sidebar.title("📌 Navigasi Menu")
-
-if "is_admin" not in st.session_state:
-    st.session_state["is_admin"] = False
-if "admin_user" not in st.session_state:
-    st.session_state["admin_user"] = ""
-
-# Form Login Admin di Sidebar
-st.sidebar.markdown("---")
-if not st.session_state["is_admin"]:
-    st.sidebar.subheader("🔑 Login Admin")
-    username_input = st.sidebar.text_input("Username")
-    password_input = st.sidebar.text_input("Password", type="password")
-    if st.sidebar.button("Login"):
-        conn = sqlite3.connect("absensi.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT username FROM admin WHERE username = ? AND password = ?", (username_input, password_input))
-        admin = cursor.fetchone()
-        conn.close()
-        if admin:
-            st.session_state["is_admin"] = True
-            st.session_state["admin_user"] = admin[0]
-            st.sidebar.success(f"Login berhasil sebagai {admin[0]}")
-            st.rerun()
+        if existing:
+            return False, f"⚠️ **{nama}** ({nis_nip}) sudah melakukan absensi hari ini di kelas **{nama_kelas}** ({nama_guru})!"
         else:
-            st.sidebar.error("Username/Password salah!")
-else:
-    st.sidebar.success(f"👤 Login sebagai: **{st.session_state['admin_user']}**")
-    if st.sidebar.button("Logout Admin"):
-        st.session_state["is_admin"] = False
-        st.session_state["admin_user"] = ""
-        st.rerun()
+            c.execute('''
+                INSERT INTO absensi (nama_guru, nama_kelas, nis_nip, nama, tanggal, jam)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (nama_guru, nama_kelas, nis_nip, nama, tanggal_str, jam_str))
+            conn.commit()
+            return True, f"✅ Absensi berhasil dicatat! Nama: **{nama}** | Guru: **{nama_guru}** | Kelas: **{nama_kelas}**"
 
-# --- HALAMAN UTAMA ---
-st.title("📋 Aplikasi Absensi Harian Web")
+# --- TAMPILAN UTAMA STREAMLIT ---
+st.title("📋 Sistem Absensi Harian Berbasis QR Code")
+st.markdown("Aplikasi absensi terintegrasi untuk berbagai Guru & Kelas.")
 
-# Tab Layar (Sudah Ditambahkan Tab QR Code)
-tab1, tab2, tab3 = st.tabs(["✍️ Input Manual", "📷 Scan QR Code", "📊 Rekap Data"])
+tab1, tab2 = st.tabs(["📷 Scan / Input Absensi", "📊 Rekap Data Absensi"])
 
+# --- TAB 1: SCAN ABSENSI ---
 with tab1:
-    st.subheader("Catat Kehadiran Manual")
-    col1, col2 = st.columns(2)
-    with col1:
-        id_anggota = st.text_input("ID / NIK / NIM")
-        nama = st.text_input("Nama Lengkap")
-    with col2:
-        status = st.selectbox("Status Kehadiran", ["Hadir", "Izin", "Sakit"])
-
-    if st.button("Submit Absensi", type="primary"):
-        if not id_anggota or not nama:
-            st.warning("Mohon isi ID dan Nama Lengkap!")
-        else:
-            msg = proses_absensi(id_anggota, nama, status)
-            st.success(msg)
-
-with tab2:
-    st.subheader("📷 Scan QR Code lewat Kamera Browser")
-    st.info("Arahkan kartu/gambar QR Code ke kamera di bawah ini.")
+    st.header("Form Absensi Harian")
     
-    img_file_buffer = st.camera_input("Ambil Foto QR Code")
+    col_opt1, col_opt2 = st.columns(2)
+    with col_opt1:
+        nama_guru = st.text_input("👨‍🏫 / 👩‍🏫 Nama Guru / Pengajar", value="Guru A", help="Masukkan nama guru yang mengampu kelas")
+    with col_opt2:
+        nama_kelas = st.text_input("🏫 Nama Kelas / Mata Pelajaran", value="Kelas 10-A", help="Contoh: Kelas 10-A / Matematika")
 
-    if img_file_buffer is not None:
-        # Convert foto dari browser ke OpenCV format
-        bytes_data = img_file_buffer.getvalue()
-        cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+    st.subheader("Pilih Metode Input:")
+    metode = st.radio("Metode Absensi", ["Kamera Web / HP (Scan QR)", "Input Manual NIS/Nama"], horizontal=True)
 
-        # Deteksi QR Code
-        detector = cv2.QRCodeDetector()
-        data, bbox, _ = detector.detectAndDecode(cv2_img)
+    if "Kamera" in metode:
+        st.info("Arahkan QR Code ke kamera Anda. Pastikan pencahayaan cukup.")
+        camera_image = st.camera_input("Kamera Absensi")
 
-        if data:
-            st.success(f"QR Code Terdeteksi: **{data}**")
-            # Format QR: "ID" atau "ID,Nama"
-            if "," in data:
-                qr_id, qr_nama = data.split(",", 1)
+        if camera_image:
+            bytes_data = camera_image.getvalue()
+            cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+
+            detector = cv2.QRCodeDetector()
+            data, bbox, _ = detector.detectAndDecode(cv_img)
+
+            if data:
+                sukses, pesan = proses_absensi(data, nama_guru, nama_kelas)
+                if sukses:
+                    st.success(pesan)
+                else:
+                    st.warning(pesan)
             else:
-                qr_id = data
-                qr_nama = f"Anggota-{qr_id}"
+                st.error("❌ QR Code tidak terdeteksi. Silakan coba posisikan QR Code lebih jelas.")
 
-            msg = proses_absensi(qr_id, qr_nama, "Hadir")
-            st.balloons()
-            st.success(msg)
-        else:
-            st.error("QR Code tidak terbaca / tidak jelas. Silakan coba arahkan ulang ke kamera.")
+    else:
+        with st.form("form_manual", clear_on_submit=True):
+            data_manual = st.text_input("Ketik 'NIS,Nama' atau 'Nama Saja' (Contoh: 1001,Ahmad Purba)")
+            submitted = st.form_submit_button("Submit Absensi")
 
-with tab3:
-    st.subheader("Data Rekap Absensi")
-    
-    conn = sqlite3.connect("absensi.db")
-    df = pd.read_sql_query("SELECT id, id_anggota, nama, tanggal, jam_masuk, jam_keluar, status FROM absensi ORDER BY id DESC", conn)
-    conn.close()
+            if submitted and data_manual:
+                sukses, pesan = proses_absensi(data_manual, nama_guru, nama_kelas)
+                if sukses:
+                    st.success(pesan)
+                else:
+                    st.warning(pesan)
 
-    # Filter Pencarian
-    search = st.text_input("🔍 Cari Data (Nama / ID)...")
-    if search:
-        df = df[df['nama'].str.contains(search, case=False, na=False) | df['id_anggota'].str.contains(search, case=False, na=False)]
+# --- TAB 2: REKAP DATA ---
+with tab2:
+    st.header("📊 Rekapitulasi Data Absensi")
 
-    # Tampilkan Tabel
-    st.dataframe(df, use_container_width=True)
+    with sqlite3.connect("absensi.db") as conn:
+        df = pd.read_sql_query("SELECT * FROM absensi ORDER BY id DESC", conn)
 
-    # --- FITUR KHUSUS ADMIN ---
-    if st.session_state["is_admin"]:
-        st.markdown("---")
-        st.subheader("🛠️ Panel Kontrol Admin")
+    if not df.empty:
+        col_f1, col_f2 = st.columns(2)
         
-        col_admin1, col_admin2 = st.columns(2)
-        
-        with col_admin1:
-            st.markdown("### 📥 Ekspor Laporan")
-            csv_data = df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="Download Laporan (CSV)",
-                data=csv_data,
-                file_name=f"rekap_absensi_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
+        list_guru = ["Semua Guru"] + list(df["nama_guru"].dropna().unique())
+        list_kelas = ["Semua Kelas"] + list(df["nama_kelas"].dropna().unique())
 
-        with col_admin2:
-            st.markdown("### 🗑️ Hapus Baris Data")
-            id_to_delete = st.number_input("Masukkan DB ID yang ingin dihapus", min_value=1, step=1)
-            if st.button("Hapus Data", type="primary"):
-                conn = sqlite3.connect("absensi.db")
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM absensi WHERE id = ?", (id_to_delete,))
-                conn.commit()
-                conn.close()
-                st.success(f"Data dengan DB ID {id_to_delete} berhasil dihapus!")
-                st.rerun()
+        with col_f1:
+            filter_guru = st.selectbox("Filter Berdasarkan Guru:", list_guru)
+        with col_f2:
+            filter_kelas = st.selectbox("Filter Berdasarkan Kelas:", list_kelas)
+
+        # Terapkan Filter
+        df_filtered = df.copy()
+        if filter_guru != "Semua Guru":
+            df_filtered = df_filtered[df_filtered["nama_guru"] == filter_guru]
+        if filter_kelas != "Semua Kelas":
+            df_filtered = df_filtered[df_filtered["nama_kelas"] == filter_kelas]
+
+        st.subheader(f"Total Data Terfilter: {len(df_filtered)} Absensi")
+        
+        # Tampilkan Tabel
+        st.dataframe(df_filtered[["tanggal", "jam", "nama_guru", "nama_kelas", "nis_nip", "nama"]], use_container_width=True)
+
+        # Download Excel via In-Memory Buffer (Lebih Aman untuk Cloud)
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df_filtered.to_excel(writer, index=False, sheet_name="Rekap Absensi")
+        excel_data = output.getvalue()
+
+        st.download_button(
+            label="📥 Download Rekap Excel (Sesuai Filter)",
+            data=excel_data,
+            file_name=f"rekap_absensi_{filter_guru}_{filter_kelas}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.info("Belum ada data absensi yang tersimpan.")
