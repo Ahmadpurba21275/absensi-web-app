@@ -7,17 +7,45 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# --- KONFIGURASI HALAMAN ---
+# --- 1. KONFIGURASI HALAMAN ---
 st.set_page_config(
     page_title="Aplikasi Absensi Harian Pro",
     page_icon="📋",
     layout="wide"
 )
 
+# Custom Styling Tema Gelap Permanen
+st.markdown("""
+    <style>
+    .stApp {
+        background-color: #121212;
+        color: #e0e0e0;
+    }
+    div[data-testid="stForm"] {
+        background-color: #1e1e1e;
+        border-radius: 8px;
+        border: 1px solid #333333;
+        padding: 20px;
+    }
+    input {
+        background-color: #2a2a2a !important;
+        color: #ffffff !important;
+        border: 1px solid #444444 !important;
+    }
+    div[data-testid="stDataFrame"] {
+        background-color: #1e1e1e;
+        border-radius: 8px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # Zona Waktu WIB
 WIB = pytz.timezone('Asia/Jakarta')
 
-# --- SETUP DATABASE (SAMA DENGAN APP_ABSENSI.PY) ---
+# --- 2. SETUP DATABASE & SESSION STATE ---
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
+
 def init_db():
     with sqlite3.connect("absensi.db") as conn:
         c = conn.cursor()
@@ -36,7 +64,40 @@ def init_db():
 
 init_db()
 
-# --- FUNGSI PROSES ABSENSI ---
+# --- 3. DIALOG POP-UP LOGIN ADMIN ---
+@st.dialog("🔑 Login Admin System")
+def modal_login_admin():
+    st.write("Masukkan akun admin untuk mengakses area pengelolaan data:")
+    username = st.text_input("Username", placeholder="Ketik username...")
+    password = st.text_input("Password", type="password", placeholder="Ketik password...")
+    
+    if st.button("Masuk / Login", type="primary", use_container_width=True):
+        if username == "admin" and password == "admin123":
+            st.session_state.is_admin = True
+            st.success("Login Admin Berhasil!")
+            st.rerun()
+        else:
+            st.error("Username atau Password salah!")
+
+# --- 4. HEADER UTAMA & TOMBOL LOGIN/LOGOUT ---
+col_head1, col_head2 = st.columns([4, 1])
+with col_head1:
+    st.title("Aplikasi Absensi Harian Pro")
+with col_head2:
+    st.write("")
+    if st.session_state.is_admin:
+        if st.button("🚪 Logout Admin", type="secondary", use_container_width=True):
+            st.session_state.is_admin = False
+            st.rerun()
+    else:
+        if st.button("🔑 Login Admin", type="primary", use_container_width=True):
+            modal_login_admin()
+
+# Status jika Admin sedang login
+if st.session_state.is_admin:
+    st.success("🔓 Mode Admin Aktif: Anda dapat mengunduh, menghapus, atau mereset seluruh data absensi.")
+
+# --- 5. FUNGSI PROSES ABSENSI ---
 def simpan_absensi(id_anggota, nama, status_input):
     sekarang = datetime.now(WIB)
     tgl_str = sekarang.strftime("%Y-%m-%d")
@@ -44,7 +105,6 @@ def simpan_absensi(id_anggota, nama, status_input):
 
     with sqlite3.connect("absensi.db") as conn:
         c = conn.cursor()
-        # Cek apakah ID sudah absen hari ini
         c.execute('''
             SELECT id, jam_masuk, jam_keluar FROM absensi 
             WHERE id_anggota = ? AND tanggal = ?
@@ -52,7 +112,6 @@ def simpan_absensi(id_anggota, nama, status_input):
         existing = c.fetchone()
 
         if existing:
-            # Jika sudah ada jam masuk tapi belum ada jam keluar -> Update Jam Keluar
             if existing[1] and not existing[2]:
                 c.execute('''
                     UPDATE absensi SET jam_keluar = ? WHERE id = ?
@@ -62,7 +121,6 @@ def simpan_absensi(id_anggota, nama, status_input):
             else:
                 return False, f"⚠️ **{nama}** ({id_anggota}) sudah melakukan absen masuk & keluar hari ini!"
         else:
-            # Jika belum ada -> Catat Absen Masuk
             c.execute('''
                 INSERT INTO absensi (id_anggota, nama, tanggal, jam_masuk, status)
                 VALUES (?, ?, ?, ?, ?)
@@ -70,16 +128,7 @@ def simpan_absensi(id_anggota, nama, status_input):
             conn.commit()
             return True, f"✅ **{nama}** ({id_anggota}) berhasil Absen Masuk ({status_input}) pada {jam_str}!"
 
-# --- HEADER UTAMA ---
-col_head1, col_head2 = st.columns([4, 1])
-with col_head1:
-    st.title("Aplikasi Absensi Harian Pro")
-with col_head2:
-    st.write("")
-    if st.button("🔑 Login Admin", use_container_width=True):
-        st.info("Area Login Admin")
-
-# --- FORM INPUT ABSENSI ---
+# --- 6. FORM INPUT ABSENSI ---
 st.subheader("📋 Form Input Absensi")
 
 with st.form("form_absensi_sync", clear_on_submit=True):
@@ -107,7 +156,7 @@ with st.form("form_absensi_sync", clear_on_submit=True):
         else:
             st.error("❌ Mohon isi ID/NIK dan Nama Lengkap!")
 
-# Mode Kamera untuk Scan QR jika tombol Scan diklik / diaktifkan
+# Mode Kamera untuk Scan QR
 if 'show_camera' not in st.session_state:
     st.session_state.show_camera = False
 
@@ -137,13 +186,14 @@ if st.session_state.show_camera:
         else:
             st.error("❌ QR Code tidak terdeteksi. Silakan posisikan QR lebih jelas.")
 
-# --- TABEL DATA ABSENSI ---
+# --- 7. TABEL REKAPITULASI DATA ---
 st.markdown("---")
 st.subheader("📊 Rekapitulasi Data Absensi")
 
 with sqlite3.connect("absensi.db") as conn:
     df = pd.read_sql_query('''
         SELECT 
+            id AS 'No ID',
             id_anggota AS 'ID / NIK', 
             nama AS 'Nama', 
             tanggal AS 'Tanggal', 
@@ -157,16 +207,54 @@ with sqlite3.connect("absensi.db") as conn:
 if not df.empty:
     st.dataframe(df, use_container_width=True)
     
-    # Download Excel
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Absensi")
-    
-    st.download_button(
-        label="📥 Download Data (Excel)",
-        data=output.getvalue(),
-        file_name="rekap_absensi_pro.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    col_dl, col_blank = st.columns([1, 1])
+    with col_dl:
+        # Download Excel
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Absensi")
+        
+        st.download_button(
+            label="📥 Download Data (Excel)",
+            data=output.getvalue(),
+            file_name="rekap_absensi_pro.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+    # --- PANEL PENGELOLAAN DATA ADMIN (HANYA MUNCUL JIKA ADMIN LOGIN) ---
+    if st.session_state.is_admin:
+        st.markdown("---")
+        st.markdown("### ⚙️ Panel Kelola Data (Khusus Admin)")
+        
+        col_hapus, col_reset = st.columns(2)
+        
+        # 1. Hapus Data Spesifik
+        with col_hapus:
+            st.markdown("##### 🗑️ Hapus 1 Baris Data")
+            list_id = df['No ID'].tolist()
+            id_terpilih = st.selectbox("Pilih No ID yang ingin dihapus:", list_id)
+            
+            if st.button("Hapus Data Terpilih", type="secondary", use_container_width=True):
+                with sqlite3.connect("absensi.db") as conn:
+                    c = conn.cursor()
+                    c.execute("DELETE FROM absensi WHERE id = ?", (id_terpilih,))
+                    conn.commit()
+                st.success(f"Data dengan No ID {id_terpilih} berhasil dihapus!")
+                st.rerun()
+
+        # 2. Reset Seluruh Database
+        with col_reset:
+            st.markdown("##### ⚠️ Reset / Hapus Semua Data")
+            st.caption("Tindakan ini akan mengosongkan seluruh tabel absensi.")
+            
+            if st.button("🔥 Reset Semua Data Absensi", type="primary", use_container_width=True):
+                with sqlite3.connect("absensi.db") as conn:
+                    c = conn.cursor()
+                    c.execute("DELETE FROM absensi")
+                    conn.commit()
+                st.success("Seluruh data absensi berhasil dikosongkan!")
+                st.rerun()
+
 else:
     st.info("Belum ada data absensi tersimpan.")
